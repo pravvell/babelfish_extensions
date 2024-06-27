@@ -1312,7 +1312,7 @@ pltsql_compile_inline(char *proc_source, InlineCodeBlockArgs *args)
 
 	/* Debug dump for completed functions */
 	if (pltsql_DumpExecTree || pltsql_trace_tree)
-		pltsql_dumptree(function);
+	pltsql_dumptree(function);
 
 	/*
 	 * Pop the error context stack
