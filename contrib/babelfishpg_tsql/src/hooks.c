@@ -5223,8 +5223,8 @@ typedef struct
 static Query * substitute_actual_srf_parameters(Query *expr, int nargs, List *args);
 static Node * substitute_actual_srf_parameters_mutator(Node *node, substitute_actual_srf_parameters_context *context);
 
-static Query * substitute_actual_srf_parameters(Query *expr, int nargs, List *args)
-{
+static Query * substitute_actual_srf_parameters(Query *expr, int nargs, List *args){
+
 	substitute_actual_srf_parameters_context context;
 
 	context.nargs = nargs;
@@ -5542,7 +5542,7 @@ static void freeFlowExpList(FlowExpList *stmt_list) {
 
 	ExprPair *exp;
 
-	while (head != NULL) {
+	while (head != NULL && head->flow_expression != NULL) {
 		exp = head->flow_expression;
 		cleanUDFResolvedStmt(exp->then_expr);
 		cleanUDFResolvedStmt(exp->else_expr);
@@ -5733,7 +5733,7 @@ char* findDerivedTableName(char *var, Chain *c, Chain *ch) {
 			
 			while (ptr != NULL) {
 				curr = ptr->node;
-				if (strcmp(curr->var, var) == 0) {
+				if (strcasecmp(curr->var, var) == 0) {
 					int size = strlen(curr->alias) + 1 + strlen(curr->var) + 1;
 					char *v = (char *) malloc(size);
 					char *buffer = v;
@@ -5754,7 +5754,7 @@ char* findDerivedTableName(char *var, Chain *c, Chain *ch) {
 	ptr = c->rear;
 	while (ptr != NULL) {
 		curr = ptr->node;
-		if (strcmp(curr->var, var) == 0) {
+		if (strcasecmp(curr->var, var) == 0) {
 			int size = strlen(curr->alias) + 1 + strlen(curr->var) + 1;
 			char *v = (char *) malloc(size);
 			char *buffer = v;
@@ -5779,10 +5779,15 @@ char* findDerivedTableName(char *var, Chain *c, Chain *ch) {
 	return res;
 }
 
+static bool isPartOfVaribleName(char ch) {
+	if (isalnum(ch) != 0 || ch == '_')
+		return true;
+	return false;
+}
+
 // we just need to find the tokens proceeded by @ and replace it by
 // DT.name
 static char* resolveDerivedTableReferences(char *query, Chain *c, Chain *ch1) {
-	
 	//we have to use RExpr struct here, but for now just use a simple char buffer
 	char *buffer = (char *) malloc(250);
 	char *ptr = query, *writer = buffer;
@@ -5797,7 +5802,7 @@ static char* resolveDerivedTableReferences(char *query, Chain *c, Chain *ch1) {
 			int length;
 			ptr++;
 			start = ptr;
-			while (*ptr != '\0' && *ptr != ' ') {
+			while (*ptr != '\0' && isPartOfVaribleName(*ptr)) { //*ptr != ' ') {
 				ptr++;
 			}
 			//variable - [start, ptr)
@@ -5864,7 +5869,7 @@ static void addPhiDefToChain(Chain *c, phi_node *node) {
 
 /* Helper functions to resolve control flow block in the UDF*/
 // This assumes the query always begin the select keyword.
-char *skipSELECTKeyword(char *query) {
+static char *skipSELECTKeyword(char *query) {
 	if (query == NULL)
 		return NULL;
 
@@ -5875,12 +5880,12 @@ char *skipSELECTKeyword(char *query) {
 
 // Must start searching from the rear end of the list. This is a 
 // must for correctness.
-char* findMatchingThenDef(Chain* ch, char *var) {
+static char* findMatchingThenDef(Chain* ch, char *var) {
 	Chain *curr = ch;
 	vAlsList *ptr = curr->rear;
 	while (ptr != NULL && ptr->node != NULL) {
 		varAlias *node = ptr->node;
-		if (strcmp(node->var, var) == 0) {
+		if (strcasecmp(node->var, var) == 0) {
 			return node->alias;
 		}
 		ptr = ptr->prev;
@@ -5899,6 +5904,7 @@ static ResolvedDeclareStmt* resolveDeclarationAndAssignStmt(UDFStmtNode *stmt, C
 
 	ResolvedDeclareStmt *rstmt = (ResolvedDeclareStmt *) malloc(sizeof(ResolvedDeclareStmt));
 	char *varName, *query;
+	size_t buffer_size = 0;
 
 	rstmt->stmt_type = declare_stmt;
 	//Set up variable name.
@@ -5906,16 +5912,18 @@ static ResolvedDeclareStmt* resolveDeclarationAndAssignStmt(UDFStmtNode *stmt, C
 	if (*varName == '@')
 		varName++;
 	
-	int size = strlen(varName);
-	rstmt->def_name = (char *)malloc(size + 1);
+	buffer_size = strlen(varName);
+	rstmt->def_name = (char *)malloc(buffer_size + 1);
 	strcpy(rstmt->def_name, varName);
-	rstmt->def_name[size] = '\0';
+	//no need to put null char since strcpy will copy the null terminating character.
+	//rstmt->def_name[buffer_size] = '\0';
 
 	//Set up alias name only if it is not a substmt.
 	//array of 10 is more than enough.
 	if (!substmt) {
-		rstmt->dt_alias = (char *)malloc(10);
-		snprintf(rstmt->dt_alias, sizeof(rstmt->dt_alias), "DT%d", stmt->id);
+		buffer_size = 10;
+		rstmt->dt_alias = (char *)malloc(buffer_size);
+		snprintf(rstmt->dt_alias, buffer_size, "DT%d", stmt->id);
 	}
 
 	//resolve the expression.
@@ -5939,6 +5947,7 @@ static ResolvedSelectStmt* resolveSelectStmt(UDFStmtNode *stmt, Chain *c, bool s
 	PLtsql_var *target_var	  = (PLtsql_var *)target;
 	PLtsql_row *target_row 	  = (PLtsql_row *)target_var;
 	PLtsql_expr *expr 		  = esql->sqlstmt;
+	size_t buffer_size = 0;
 
 	int nfields = target_row->nfields;
 	if (nfields > 1)
@@ -5950,14 +5959,15 @@ static ResolvedSelectStmt* resolveSelectStmt(UDFStmtNode *stmt, Chain *c, bool s
 	
 	ResolvedSelectStmt *rstmt = (ResolvedSelectStmt *) malloc(sizeof(ResolvedSelectStmt));
 
-	int size = strlen(varName);
-	rstmt->def_name = (char *) malloc(size + 1);
-	strcpy(rstmt->def_name, varName);	
-	rstmt->def_name[size] = '\0';
+	buffer_size = strlen(varName);
+	rstmt->def_name = (char *) malloc(buffer_size + 1);
+	strcpy(rstmt->def_name, varName);
+	
 
 	if (!substmt) {
-		rstmt->dt_alias = (char *)malloc(10);
-		snprintf(rstmt->dt_alias, sizeof(rstmt->dt_alias), "DT%d", stmt->id);
+		buffer_size = 10;
+		rstmt->dt_alias = (char *)malloc(buffer_size);
+		snprintf(rstmt->dt_alias, buffer_size, "DT%d", stmt->id);
 	}
 
 	rstmt->stmt_type = select_stmt;
@@ -5978,11 +5988,17 @@ static ResolvedReturnStmt* resolveReturnStmt(UDFStmtNode *stmt, Chain *c) {
 
 	PLtsql_stmt_return *pl_returnstmt = (PLtsql_stmt_return *) stmt->plstmt;
 
+	size_t buffer_size = 0;
+
 	//Default name for the last return statement
-	rstmt->def_name = "returnVal";
-	
-	rstmt->dt_alias = (char *) malloc(10);
-	snprintf(rstmt->dt_alias, sizeof(rstmt->dt_alias), "DT%d", stmt->id);
+	buffer_size = strlen("returnVal");
+
+	rstmt->def_name = (char *) malloc(buffer_size + 1);
+	snprintf(rstmt->def_name, buffer_size + 1, "%s", "returnVal");
+
+	buffer_size = 10;
+	rstmt->dt_alias = (char *) malloc(buffer_size);
+	snprintf(rstmt->dt_alias, buffer_size, "DT%d", stmt->id);
 
 	rstmt->stmt_type = return_stmt;
 	
@@ -5995,12 +6011,13 @@ static ResolvedReturnStmt* resolveReturnStmt(UDFStmtNode *stmt, Chain *c) {
 }
 
 // Append definitions and DT to phi list.
-static phi_node* makePhiNode(char *then_alias, char *else_alias, char *name) {
+static phi_node* makePhiNode(char *then_alias, char *else_alias, char *name, size_t *buffer_size) {
 	phi_node *curr = newPhi();
 	curr->def_name = name;
 	curr->then_dt_alias  = then_alias;
 	curr->else_dt_alias   = else_alias;
-	curr->phi_node_alias = (char *) malloc(10);
+	*buffer_size = 10;
+	curr->phi_node_alias = (char *) malloc(*buffer_size);
 	return curr;
 }
 
@@ -6015,22 +6032,37 @@ static ResolvedControlStmt* resolveControlStmt(UDFStmtNode *stmt, Chain *c, PLts
 	PLtsql_stmt *thenstmt 		 = contl_stmt->then_body;
 	PLtsql_stmt *elsestmt 		 = contl_stmt->else_body;
 
+	// Currently, we don't support single path control flow.
+	// This should be easy to extend.
+	if (thenstmt == NULL || elsestmt == NULL)
+		return NULL;
+	/*
+		Early bail out for non block statements. One particular case
+		is if the block only contains a single return statement.
+	*/
+	if (thenstmt->cmd_type != PLTSQL_STMT_BLOCK || elsestmt->cmd_type != PLTSQL_STMT_BLOCK)
+		return NULL;
+
 	PLtsql_stmt_block *thenBlock = (PLtsql_stmt_block *)thenstmt;
 	PLtsql_stmt_block *elseBlock = (PLtsql_stmt_block *)elsestmt;
 	
 	ListCell *bss = NULL;
 	PLtsql_stmt_assign *assignment = NULL;
+	size_t buffer_size = 0;
 
 	rstmt->stmt_type = control_stmt;
 	//Construct the predicate expression of the control block
 	//emitter should emit the following string:
 	//SELECT CASE WHEN cond->query THEN 1 ELSE 0 AS def_name) dt_alias
-	rstmt->def_name = (char *) malloc(strlen("predVal"));
 
-	snprintf(rstmt->dt_alias, sizeof(rstmt->dt_alias), "%s", "predVal");
+	buffer_size = strlen("predVal");
+	rstmt->def_name = (char *) malloc(buffer_size + 1);
+	snprintf(rstmt->def_name, buffer_size + 1, "%s", "predVal");
 	
-	rstmt->dt_alias = (char *)malloc(10);
-	snprintf(rstmt->dt_alias, sizeof(rstmt->dt_alias), "DT%d", stmt->id);
+	buffer_size = 10;
+	rstmt->dt_alias = (char *)malloc(buffer_size);
+	snprintf(rstmt->dt_alias, buffer_size, "DT%d", stmt->id);
+
 	rstmt->predicate_expr = skipSELECTKeyword(cond->query);
 	rstmt->predicate_expr = resolveDerivedTableReferences(rstmt->predicate_expr, c, NULL);
 
@@ -6063,8 +6095,9 @@ static ResolvedControlStmt* resolveControlStmt(UDFStmtNode *stmt, Chain *c, PLts
 			Assert(false && "Unsupported statements in the if/else block");
 		}
 		//construct a DT alias name for this particular expression.
-		base_stmt->dt_alias = (char *) malloc(10);
-		snprintf(base_stmt->dt_alias, sizeof(base_stmt->dt_alias), "DT%d%d", stmt->id, counter);
+		buffer_size = 10;
+		base_stmt->dt_alias = (char *) malloc(buffer_size);
+		snprintf(base_stmt->dt_alias, buffer_size, "DT%d%d", stmt->id, counter);
 
 		curr->flow_expression->then_expr = base_stmt;
 		curr->flow_expression->else_expr = NULL;
@@ -6098,21 +6131,22 @@ static ResolvedControlStmt* resolveControlStmt(UDFStmtNode *stmt, Chain *c, PLts
 			Assert(false && "Unsupported statements in the if/else block");
 		}
 		//construct a DT alias name for this particular expression.
-		base_stmt->dt_alias = (char *) malloc(10);
-		snprintf(base_stmt->dt_alias, sizeof(base_stmt->dt_alias), "DT%d%d", stmt->id, counter);
+		buffer_size = 10;
+		base_stmt->dt_alias = (char *) malloc(buffer_size);
+		snprintf(base_stmt->dt_alias, buffer_size, "DT%d%d", stmt->id, counter);
 
 		//Search the def chain of then part to find matching definitions
 		char *then_alias = findMatchingThenDef(then_def, base_stmt->def_name);
 
 		if (then_alias != NULL) {
-			phi_node *curr = makePhiNode(then_alias, base_stmt->dt_alias, base_stmt->def_name);
-			snprintf(curr->phi_node_alias, sizeof(curr->phi_node_alias), "DT%d%d%d", stmt->id, 0, phi_counter);
+			phi_node *curr = makePhiNode(then_alias, base_stmt->dt_alias, base_stmt->def_name, &buffer_size);
+			snprintf(curr->phi_node_alias, buffer_size, "DT%d%d%d", stmt->id, 0, phi_counter);
 			addPhiDefToChain(phi_def, curr);
 			phi_curr->def  = curr;
 			phi_curr->next = newPhiList();
 			phi_curr = phi_curr->next;
 		}
-		
+
 		curr->flow_expression->then_expr = NULL;
 		curr->flow_expression->else_expr = base_stmt;
 
@@ -6283,6 +6317,7 @@ static void emitSubStatementsInIfElseBlock(RExpr *expr, ResolvedControlStmt *con
 	FlowExpList *curr;
 	ResolvedStmtBase *valid_expr;
 	
+	//length guarantees that strcpy's will be null-terminated.
 	char *predicateExpr = (char *) malloc(length);
 	char *pwrite = predicateExpr;
 	strcpy(pwrite, alias);
